@@ -184,8 +184,9 @@ export class TrackEditor {
 
   _onMouseMove(e) {
     if (!this.drag) {
-      const f = this._featureAt(e.point, ['ctrl-points-l', 'pit-points-l']);
-      this.map.getCanvas().style.cursor = f ? 'move'
+      const f = this._featureAt(e.point, ['ctrl-points-l', 'pit-points-l', 'stands-fill']);
+      this.map.getCanvas().style.cursor = f
+        ? (f.properties.kind === 'stand' ? 'pointer' : 'move')
         : (this.mode === 'view' ? '' : 'crosshair');
       return;
     }
@@ -203,13 +204,15 @@ export class TrackEditor {
   }
 
   _onRightClick(e) {
-    const f = this._featureAt(e.point, ['ctrl-points-l', 'pit-points-l']);
+    const f = this._featureAt(e.point, ['ctrl-points-l', 'pit-points-l', 'stands-fill']);
     if (!f) return;
     e.preventDefault();
     const s = this.state;
     if (f.properties.kind === 'track') {
       s.points.splice(f.properties.idx, 1);
       if (s.points.length < 3) s.closed = false;
+    } else if (f.properties.kind === 'stand') {
+      s.stands.splice(f.properties.idx, 1);
     } else {
       s.pit.splice(f.properties.idx, 1);
     }
@@ -445,7 +448,7 @@ export class TrackEditor {
         corner(W / 2, D / 2), corner(-W / 2, D / 2), corner(-W / 2, -D / 2),
       ];
       return {
-        type: 'Feature', properties: {},
+        type: 'Feature', properties: { idx: s.stands.indexOf(st), kind: 'stand' },
         geometry: { type: 'Polygon', coordinates: [ring] },
       };
     }));
