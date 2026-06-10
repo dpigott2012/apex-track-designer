@@ -1,0 +1,56 @@
+# Apex — Track Designer & Driving Game
+
+Design a real racetrack anywhere on Earth on a 3D satellite map, validate it
+against F1/GT homologation rules, then drive it in first person.
+
+## Hard constraints
+
+- **No build tools, no Node, no Python on this machine.** Everything is plain
+  ES modules loaded from CDN (MapLibre GL 5.6 UMD, Three.js 0.160 via import
+  map in `index.html`). Do not introduce npm/`node_modules` — this folder is
+  OneDrive-synced and the machine has no Node anyway.
+- **No API keys.** Imagery is Esri World Imagery tiles, elevation is AWS
+  Terrarium tiles, geocoding is Nominatim — all free/keyless. Keep it that way
+  unless the user explicitly opts into a keyed provider (e.g. Google 3D Tiles).
+- Plain JavaScript, not TypeScript (no build step to strip types).
+
+## Run / test
+
+- Serve with `serve.ps1` (PowerShell HttpListener, port 8080). The preview
+  server config is `.claude/launch.json` (name: `trackgame`).
+- **Hidden-tab testing:** browser previews run in a hidden tab where
+  `requestAnimationFrame` and timers are throttled, which stalls MapLibre and
+  Three. Load the app as `/?bg=1` to enable the MessageChannel-based rAF shim
+  in `index.html`. Screenshots of the hidden preview time out — verify with
+  `preview_eval` + `map.queryRenderedFeatures` / HUD DOM reads instead.
+- `window.__app` exposes `{ map, editor, state, demoTrack(), enterDrive() }`
+  for scripted testing. `demoTrack()` drops a known-good 4 km closed circuit
+  at the current map center.
+
+## Architecture
+
+- `index.html` — UI shell, CSS, CDN imports, bg-tab rAF shim.
+- `src/geo.js` — pure math: local ENU projection, Catmull-Rom sampling,
+  curvature, corner detection, longest straight, quasi-static lap-time sim,
+  Esri tile stitching for the drive-mode ground texture.
+- `src/editor.js` — MapLibre map + `TrackEditor` (modes: view/track/pit/start/
+  stand; drag points, right-click delete). Owns all map sources/layers and
+  recomputes `derived` (spline, metrics, corners, pit, lap est) on every edit.
+- `src/validate.js` — homologation presets (f1/gt/club) + check list. Values
+  are simplified from FIA Appendix O; directional, not official.
+- `src/drive.js` — Three.js first-person mode built from `derived`: road
+  ribbon mesh, kerbs on corners, start gantry, grandstand boxes, satellite
+  ground plane, arcade car physics, lap timing, minimap.
+- `src/main.js` — glue: panels, toolbar, search, localStorage persistence
+  (`apex.track.v1`), JSON export/import, drive-mode entry.
+
+## Gotchas learned the hard way
+
+- MapLibre 5 cannot render circle/symbol layers when terrain is enabled on the
+  **globe** projection. The map uses globe when zoomed out and swaps to
+  mercator+terrain past zoom 9 (`updateProjection` in editor.js). Never swap
+  projection mid-animation (`map.isMoving()`) — it freezes the camera and
+  `idle` never fires.
+- Track state lives in `state` (plain JSON, saved/exported verbatim); all
+  geometry is *derived* and never persisted. Coordinates are `[lng, lat]`;
+  local meters are x=east / y=north; Three.js maps that to (x, y-up, -z).
