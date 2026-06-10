@@ -1,6 +1,9 @@
 // First-person drive mode: builds a Three.js scene from the designed track.
 import * as THREE from 'three';
-import { offsetPath, fetchSatCanvas, bboxOfLngLats, fmtTime } from './geo.js';
+import {
+  offsetPath, fetchSatCanvas, bboxOfLngLats, fmtTime,
+  makeElevationSampler, standPose,
+} from './geo.js';
 
 const UP = new THREE.Vector3(0, 1, 0);
 
@@ -54,13 +57,15 @@ function checkerTexture() {
 }
 
 // Build a triangle-strip ribbon mesh between two offset polylines.
-function stripGeometry(left, right, s, vScale = 8) {
+// elev (optional) is a per-sample height array applied to both edges.
+function stripGeometry(left, right, s, vScale = 8, elev = null) {
   const n = left.length;
   const pos = new Float32Array(n * 2 * 3);
   const uv = new Float32Array(n * 2 * 2);
   for (let i = 0; i < n; i++) {
-    pos.set([left[i][0], 0, -left[i][1]], i * 6);
-    pos.set([right[i][0], 0, -right[i][1]], i * 6 + 3);
+    const y = elev ? elev[i] : 0;
+    pos.set([left[i][0], y, -left[i][1]], i * 6);
+    pos.set([right[i][0], y, -right[i][1]], i * 6 + 3);
     uv.set([0, s[i] / vScale], i * 4);
     uv.set([1, s[i] / vScale], i * 4 + 2);
   }
@@ -94,6 +99,30 @@ export async function startDrive({ state, derived, container, hud, onExit }) {
   const n = spline.pts.length;
   const L = spline.len;
 
+  // ---------- terrain elevation (best effort — flat on failure) ----------
+  let elevArr = new Array(n).fill(0);
+  let groundElevAt = null; // (localPt) -> meters relative to track base
+  try {
+    const coordsLL = spline.pts.map(proj.toLngLat);
+    const dem = await makeElevationSampler(bboxOfLngLats(coordsLL, 800), proj);
+    let raw = spline.pts.map((p) => dem.elevAt(p));
+    // Smooth twice (~±5 samples ≈ 40 m window) so the road stays drivable.
+    for (let pass = 0; pass < 2; pass++) {
+      const sm = raw.slice();
+      for (let i = 0; i < n; i++) {
+        let sum = 0;
+        for (let j = -5; j <= 5; j++) sum += raw[((i + j) % n + n) % n];
+        sm[i] = sum / 11;
+      }
+      raw = sm;
+    }
+    const base = Math.min(...raw);
+    elevArr = raw.map((e) => e - base);
+    groundElevAt = (p) => dem.elevAt(p) - base;
+    console.log(`elevation: ${Math.round(Math.max(...elevArr))}m of relief on this circuit`);
+  } catch (e) { console.warn('elevation unavailable, driving flat', e); }
+  const elevLoop = elevArr.concat([elevArr[0]]);
+
   // ---------- scene ----------
   const renderer = new THREE.WebGLRenderer({ canvas: container, antialias: true });
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -114,7 +143,7 @@ export async function startDrive({ state, derived, container, hud, onExit }) {
   const right = offsetPath(fakeSpline, fakeMetrics, -width / 2);
   const roadTex = asphaltTexture();
   const road = new THREE.Mesh(
-    stripGeometry(left, right, loop.s, 10),
+    stripGeometry(left, right, loop.s, 10, elevLoop),
     new THREE.MeshLambertMaterial({ map: roadTex })
   );
   road.position.y = 0.05;
@@ -135,10 +164,11 @@ export async function startDrive({ state, derived, container, hud, onExit }) {
     if (idxs.length < 2) continue;
     const sub = { pts: idxs.map((j) => spline.pts[j]), s: idxs.map((_, k) => k * 4), len: idxs.length * 4, closed: false };
     const subM = { heading: idxs.map((j) => metrics.heading[j]), curv: idxs.map((j) => metrics.curv[j]) };
+    const subE = idxs.map((j) => elevArr[j]);
     for (const side of [1, -1]) {
       const a = offsetPath(sub, subM, side * (width / 2 + 0.1));
       const b = offsetPath(sub, subM, side * (width / 2 + 2.0));
-      const kerb = new THREE.Mesh(stripGeometry(a, b, sub.s, 4), kerbMat);
+      const kerb = new THREE.Mesh(stripGeometry(a, b, sub.s, 4, subE), kerbMat);
       kerb.position.y = 0.09;
       scene.add(kerb);
     }
@@ -147,7 +177,7 @@ export async function startDrive({ state, derived, container, hud, onExit }) {
   // Start/finish: checker band + gantry.
   let si = 0;
   for (let i = 0; i < n; i++) if (spline.s[i] >= startS0) { si = i; break; }
-  const sPos = spline.pts[si], sHead = metrics.heading[si];
+  const sPos = spline.pts[si], sHead = metrics.heading[si], sElev = elevArr[si];
   {
     const band = new THREE.Mesh(
       new THREE.PlaneGeometry(width, 2.4),
@@ -155,7 +185,7 @@ export async function startDrive({ state, derived, container, hud, onExit }) {
     );
     band.rotation.x = -Math.PI / 2;
     band.rotation.z = -(sHead - Math.PI / 2);
-    band.position.copy(v3(sPos, 0.12));
+    band.position.copy(v3(sPos, sElev + 0.12));
     scene.add(band);
 
     const postGeo = new THREE.CylinderGeometry(0.35, 0.35, 9, 8);
@@ -164,11 +194,11 @@ export async function startDrive({ state, derived, container, hud, onExit }) {
     const nx = -Math.sin(sHead), ny = Math.cos(sHead);
     for (const side of [1, -1]) {
       const post = new THREE.Mesh(postGeo, grey);
-      post.position.copy(v3([sPos[0] + nx * side * (width / 2 + 1.5), sPos[1] + ny * side * (width / 2 + 1.5)], 4.5));
+      post.position.copy(v3([sPos[0] + nx * side * (width / 2 + 1.5), sPos[1] + ny * side * (width / 2 + 1.5)], sElev + 4.5));
       scene.add(post);
     }
     const beam = new THREE.Mesh(beamGeo, new THREE.MeshLambertMaterial({ color: 0xe10600 }));
-    beam.position.copy(v3(sPos, 9));
+    beam.position.copy(v3(sPos, sElev + 9));
     beam.rotation.y = -(sHead - Math.PI / 2) + Math.PI / 2;
     scene.add(beam);
   }
@@ -177,25 +207,66 @@ export async function startDrive({ state, derived, container, hud, onExit }) {
   const standMat = new THREE.MeshLambertMaterial({ color: 0x7d8597 });
   const roofMat = new THREE.MeshLambertMaterial({ color: 0xe10600 });
   for (const st of state.stands) {
-    const c = proj.toLocal([st.lng, st.lat]);
+    if (st.t == null) continue;
+    const pose = standPose(spline, metrics, st);
     const g = new THREE.Group();
     const base = new THREE.Mesh(new THREE.BoxGeometry(64, 10, 20), standMat);
     base.position.y = 5;
     const roof = new THREE.Mesh(new THREE.BoxGeometry(64, 0.8, 22), roofMat);
     roof.position.y = 13;
     g.add(base, roof);
-    g.position.copy(v3(c, 0));
-    g.rotation.y = -(st.angle - Math.PI / 2) + Math.PI / 2;
+    const sy = groundElevAt ? groundElevAt([pose.x, pose.y]) : elevArr[pose.i];
+    g.position.copy(v3([pose.x, pose.y], sy));
+    g.rotation.y = -(pose.angle - Math.PI / 2) + Math.PI / 2;
     scene.add(g);
   }
 
-  // Ground: satellite imagery if it loads, plain green otherwise.
-  const ground = new THREE.Mesh(
-    new THREE.PlaneGeometry(12000, 12000),
+  // Ground: terrain-displaced mesh, draped with satellite imagery when it
+  // loads. Terrain blends to road height within ~45 m of the centerline so
+  // the road never floats or sinks.
+  const makeTerrain = (w, h, cx, cy, mat) => {
+    const seg = 110;
+    const geo = new THREE.PlaneGeometry(w, h, seg, seg);
+    geo.rotateX(-Math.PI / 2);
+    const pos = geo.attributes.position;
+    if (groundElevAt) {
+      for (let vi = 0; vi < pos.count; vi++) {
+        const ex = cx + pos.getX(vi);          // east
+        const ny = cy - pos.getZ(vi);          // north
+        const ge = groundElevAt([ex, ny]);
+        // Nearest road sample: coarse stride, then refine.
+        let bi = 0, bd = Infinity;
+        for (let i = 0; i < n; i += 4) {
+          const p = spline.pts[i];
+          const dd = (p[0] - ex) ** 2 + (p[1] - ny) ** 2;
+          if (dd < bd) { bd = dd; bi = i; }
+        }
+        for (let j = -3; j <= 3; j++) {
+          const i = ((bi + j) % n + n) % n;
+          const p = spline.pts[i];
+          const dd = (p[0] - ex) ** 2 + (p[1] - ny) ** 2;
+          if (dd < bd) { bd = dd; bi = i; }
+        }
+        const dist = Math.sqrt(bd);
+        let t = Math.min(1, Math.max(0, (dist - width / 2 - 1) / 45));
+        t = t * t * (3 - 2 * t);
+        pos.setY(vi, (1 - t) * elevArr[bi] + t * ge - 0.12);
+      }
+      geo.computeVertexNormals();
+    }
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(cx, groundElevAt ? 0 : -0.08, -cy);
+    return mesh;
+  };
+
+  const tb = bboxOfLngLats(spline.pts.map(proj.toLngLat), 800);
+  const tA = proj.toLocal([tb.west, tb.north]);
+  const tB = proj.toLocal([tb.east, tb.south]);
+  let ground = makeTerrain(
+    tB[0] - tA[0], tA[1] - tB[1],
+    (tA[0] + tB[0]) / 2, (tA[1] + tB[1]) / 2,
     new THREE.MeshLambertMaterial({ color: 0x4a5d3a })
   );
-  ground.rotation.x = -Math.PI / 2;
-  ground.position.y = -0.08;
   scene.add(ground);
   (async () => {
     try {
@@ -206,22 +277,22 @@ export async function startDrive({ state, derived, container, hud, onExit }) {
       tex.anisotropy = 8;
       const a = proj.toLocal([sat.west, sat.north]);
       const b = proj.toLocal([sat.east, sat.south]);
-      const w = b[0] - a[0], h = a[1] - b[1];
-      const plane = new THREE.Mesh(
-        new THREE.PlaneGeometry(w, h),
+      const satGround = makeTerrain(
+        b[0] - a[0], a[1] - b[1],
+        (a[0] + b[0]) / 2, (a[1] + b[1]) / 2,
         new THREE.MeshLambertMaterial({ map: tex })
       );
-      plane.rotation.x = -Math.PI / 2;
-      plane.position.set(a[0] + w / 2, -0.05, -(b[1] + h / 2));
-      scene.add(plane);
-      ground.position.y = -0.5;
+      scene.remove(ground);
+      ground.geometry.dispose();
+      ground = satGround;
+      scene.add(ground);
     } catch (e) { console.warn('satellite ground failed', e); }
   })();
 
   // ---------- car state ----------
   const car = {
     x: 0, y: 0, heading: 0, v: 0, steer: 0,
-    idx: si,
+    idx: si, elev: elevArr[si],
   };
   // Spawn ~15 m before the line.
   {
@@ -254,7 +325,10 @@ export async function startDrive({ state, derived, container, hud, onExit }) {
     const i = car.idx;
     car.x = spline.pts[i][0]; car.y = spline.pts[i][1];
     car.heading = metrics.heading[i]; car.v = 0;
+    car.elev = elevArr[i];
   }
+
+  let flashMsg = '', flashT = 0;
 
   // Lap timing
   let lapStart = null, lastLap = null, bestLap = null, lapCount = 0;
@@ -334,7 +408,30 @@ export async function startDrive({ state, derived, container, hud, onExit }) {
       if (dd < bestD) { bestD = dd; best = i; }
     }
     car.idx = best;
-    offTrack = Math.sqrt(bestD) > width / 2 + 1.2;
+    const offDist = Math.sqrt(bestD);
+    offTrack = offDist > width / 2 + 1.2;
+
+    // Too far gone — bring the car back so the driver never gets lost.
+    if (offDist > 60) {
+      respawn();
+      flashMsg = 'RESET TO TRACK'; flashT = 2.5;
+    }
+
+    // Gravity along the road gradient (on track only).
+    if (!offTrack && Math.abs(car.v) > 0.5) {
+      const i2 = (best + 3) % n, i0 = ((best - 3) % n + n) % n;
+      const dss = ((spline.s[i2] - spline.s[i0]) + L) % L || 1;
+      const grade = (elevArr[i2] - elevArr[i0]) / dss;
+      const align = Math.cos(car.heading - metrics.heading[best]);
+      car.v -= 9.81 * grade * align * dt;
+    }
+
+    // Follow road height on track, terrain height on grass.
+    const targetElev = offTrack && groundElevAt
+      ? groundElevAt([car.x, car.y])
+      : elevArr[best];
+    car.elev += (targetElev - car.elev) * Math.min(1, dt * 7);
+    if (flashT > 0) flashT -= dt;
 
     // Lap progress / timing.
     const prog = ((spline.s[best] - startS0) + L) % L;
@@ -377,7 +474,9 @@ export async function startDrive({ state, derived, container, hud, onExit }) {
       hud.turn.style.opacity = 1;
     } else hud.turn.style.opacity = 0;
 
-    hud.msg.textContent = wrongWayT > 1.5 ? 'WRONG WAY' : (offTrack ? 'OFF TRACK' : '');
+    hud.msg.textContent = flashT > 0 ? flashMsg
+      : wrongWayT > 1.5 ? 'WRONG WAY'
+      : offTrack ? 'OFF TRACK' : '';
 
     // Minimap
     mini.clearRect(0, 0, MM, MM);
@@ -411,10 +510,14 @@ export async function startDrive({ state, derived, container, hud, onExit }) {
     const shake = offTrack && Math.abs(car.v) > 3 ? 0.06 : 0;
     camera.position.set(
       car.x + (Math.random() - 0.5) * shake,
-      1.05 + (Math.random() - 0.5) * shake,
+      car.elev + 1.05 + (Math.random() - 0.5) * shake,
       -(car.y + (Math.random() - 0.5) * shake)
     );
-    const look = v3([car.x + Math.cos(car.heading) * 20, car.y + Math.sin(car.heading) * 20], 0.9);
+    const aheadElev = offTrack ? car.elev : elevArr[(car.idx + 5) % n];
+    const look = v3(
+      [car.x + Math.cos(car.heading) * 20, car.y + Math.sin(car.heading) * 20],
+      aheadElev + 0.9
+    );
     camera.lookAt(look);
     camera.fov = 76 + Math.abs(car.v) * 0.22;
     camera.updateProjectionMatrix();

@@ -1,7 +1,7 @@
 // Track editor: owns map layers, drawing interactions, and derived geometry.
 import {
   makeProjection, sampleSpline, pathMetrics, offsetPath, ribbonRing,
-  detectCorners, longestStraight, estimateLap,
+  detectCorners, longestStraight, estimateLap, standPose,
 } from './geo.js';
 import { PRESETS } from './validate.js';
 
@@ -17,7 +17,7 @@ export function emptyState() {
     widthM: 13,
     pit: [],             // [lng, lat] pit lane polyline
     startS: 0,           // start/finish position as fraction of lap
-    stands: [],          // {lng, lat, angle}
+    stands: [],          // {t: lap fraction, offset: signed lateral meters}
     turnNames: {},       // turnNumber -> custom name
     preset: 'f1',
   };
@@ -143,7 +143,12 @@ export class TrackEditor {
     const s = this.state;
     const ll = [e.lngLat.lng, e.lngLat.lat];
     if (this.mode === 'track') {
-      if (s.closed) return;
+      if (s.closed) {
+        // Closed loop: clicking near the track inserts a point into the
+        // nearest segment so new corners can be pulled out afterward.
+        this._insertPoint(ll);
+        return;
+      }
       // Clicking the first point with >= 3 points closes the loop.
       if (s.points.length >= 3) {
         const p0 = this.map.project(s.points[0]);
@@ -155,7 +160,7 @@ export class TrackEditor {
       s.points.push(ll);
       this.rebuild();
     } else if (this.mode === 'pit') {
-      s.pit.push(ll);
+      s.pit.push(this._snapToTrackEdge(ll));
       this.rebuild();
     } else if (this.mode === 'start') {
       this._setStart(ll);
@@ -231,32 +236,67 @@ export class TrackEditor {
     this.rebuild();
   }
 
+  // Nearest spline sample to a local point: {i, dist, side (+1 left of travel)}.
+  _nearest(p) {
+    const d = this.derived;
+    return d ? this._nearestOn(d.spline, d.metrics, p) : null;
+  }
+
   _setStart(ll) {
     const d = this.derived;
-    if (!d || !d.spline.pts.length || !this.state.closed) return;
-    const p = d.proj.toLocal(ll);
-    let best = 0, bestD = Infinity;
-    d.spline.pts.forEach((q, i) => {
-      const dd = (q[0] - p[0]) ** 2 + (q[1] - p[1]) ** 2;
-      if (dd < bestD) { bestD = dd; best = i; }
-    });
-    this.state.startS = d.spline.s[best] / d.spline.len;
+    if (!d || !this.state.closed) return;
+    const near = this._nearest(d.proj.toLocal(ll));
+    if (!near) return;
+    this.state.startS = d.spline.s[near.i] / d.spline.len;
     this.rebuild();
+  }
+
+  // Insert a control point into the nearest segment of the closed loop.
+  _insertPoint(ll) {
+    const d = this.derived;
+    const s = this.state;
+    if (!d) return;
+    const p = d.proj.toLocal(ll);
+    const ctrl = s.points.map(d.proj.toLocal);
+    const n = ctrl.length;
+    let bestSeg = -1, bestD = Infinity;
+    for (let i = 0; i < n; i++) {
+      const a = ctrl[i], b = ctrl[(i + 1) % n];
+      const abx = b[0] - a[0], aby = b[1] - a[1];
+      const len2 = abx * abx + aby * aby || 1;
+      const t = Math.max(0, Math.min(1, ((p[0] - a[0]) * abx + (p[1] - a[1]) * aby) / len2));
+      const dx = p[0] - (a[0] + t * abx), dy = p[1] - (a[1] + t * aby);
+      const dd = dx * dx + dy * dy;
+      if (dd < bestD) { bestD = dd; bestSeg = i; }
+    }
+    if (bestSeg < 0 || Math.sqrt(bestD) > 150) return; // too far from the track
+    s.points.splice(bestSeg + 1, 0, ll);
+    this.rebuild();
+  }
+
+  // Snap pit-lane clicks near the circuit onto the track edge so the
+  // pit lane visually attaches to the racing surface.
+  _snapToTrackEdge(ll) {
+    const d = this.derived;
+    if (!d) return ll;
+    const near = this._nearest(d.proj.toLocal(ll));
+    if (!near || near.dist > this.state.widthM / 2 + 25) return ll;
+    const h = d.metrics.heading[near.i];
+    const q = d.spline.pts[near.i];
+    const off = near.side * (this.state.widthM / 2);
+    return d.proj.toLngLat([q[0] - Math.sin(h) * off, q[1] + Math.cos(h) * off]);
   }
 
   _addStand(ll) {
     const d = this.derived;
-    let angle = 0;
-    if (d && d.spline.pts.length) {
-      const p = d.proj.toLocal(ll);
-      let best = 0, bestD = Infinity;
-      d.spline.pts.forEach((q, i) => {
-        const dd = (q[0] - p[0]) ** 2 + (q[1] - p[1]) ** 2;
-        if (dd < bestD) { bestD = dd; best = i; }
-      });
-      angle = d.metrics.heading[best];
-    }
-    this.state.stands.push({ lng: ll[0], lat: ll[1], angle });
+    if (!d) return; // stands are anchored to the track — need one first
+    const near = this._nearest(d.proj.toLocal(ll));
+    if (!near || near.dist > 400) return;
+    const minOff = this.state.widthM / 2 + 16;
+    this.state.stands.push({
+      t: d.spline.s[near.i] / d.spline.len,
+      offset: near.side * Math.max(near.dist, minOff),
+    });
     this.rebuild();
   }
 
@@ -281,11 +321,11 @@ export class TrackEditor {
 
     if (s.points.length < 2) {
       this.derived = null;
-      for (const id of ['track-ribbon', 'centerline', 'start-line', 'turn-labels'])
+      s.stands = []; // stands are track-anchored — no track, no stands
+      for (const id of ['track-ribbon', 'centerline', 'start-line', 'turn-labels', 'stands'])
         setData(id, []);
       setData('ctrl-points', this._pointFeatures(s.points, 'track'));
       this._rebuildPit(setData, null);
-      this._rebuildStands(setData, null);
       this.onChange(null);
       return;
     }
@@ -347,7 +387,7 @@ export class TrackEditor {
       geometry: { type: 'Point', coordinates: proj.toLngLat(spline.pts[c.iApex]) },
     })));
 
-    this._rebuildStands(setData, proj);
+    this._rebuildStands(setData, proj, spline, metrics);
 
     const firstCornerDist = corners.length
       ? ((corners[0].i0 != null ? ((spline.s[corners[0].i0] - startS0) + spline.len) % spline.len : 0))
@@ -378,16 +418,27 @@ export class TrackEditor {
     return { len: spline.len, spline, metrics };
   }
 
-  _rebuildStands(setData, proj) {
+  _rebuildStands(setData, proj, spline, metrics) {
     const s = this.state;
-    if (!proj || !s.stands.length) { setData('stands', []); return; }
+    // Migrate legacy absolute stands ({lng, lat, angle}) to track anchors.
+    s.stands = s.stands.filter((st) => {
+      if (st.t != null) return true;
+      if (!st.lng) return false;
+      const near = this._nearestOn(spline, metrics, proj.toLocal([st.lng, st.lat]));
+      if (!near || near.dist > 400) return false;
+      st.t = spline.s[near.i] / spline.len;
+      st.offset = near.side * Math.max(near.dist, s.widthM / 2 + 16);
+      delete st.lng; delete st.lat; delete st.angle;
+      return true;
+    });
+    if (!s.stands.length) { setData('stands', []); return; }
     const W = 64, D = 20; // meters
     setData('stands', s.stands.map((st) => {
-      const c = proj.toLocal([st.lng, st.lat]);
-      const cos = Math.cos(st.angle), sin = Math.sin(st.angle);
+      const pose = standPose(spline, metrics, st);
+      const cos = Math.cos(pose.angle), sin = Math.sin(pose.angle);
       const corner = (dx, dy) => proj.toLngLat([
-        c[0] + dx * cos - dy * sin,
-        c[1] + dx * sin + dy * cos,
+        pose.x + dx * cos - dy * sin,
+        pose.y + dx * sin + dy * cos,
       ]);
       const ring = [
         corner(-W / 2, -D / 2), corner(W / 2, -D / 2),
@@ -398,6 +449,19 @@ export class TrackEditor {
         geometry: { type: 'Polygon', coordinates: [ring] },
       };
     }));
+  }
+
+  _nearestOn(spline, metrics, p) {
+    let best = 0, bestD = Infinity;
+    spline.pts.forEach((q, i) => {
+      const dd = (q[0] - p[0]) ** 2 + (q[1] - p[1]) ** 2;
+      if (dd < bestD) { bestD = dd; best = i; }
+    });
+    if (!spline.pts.length) return null;
+    const h = metrics.heading[best];
+    const q = spline.pts[best];
+    const cross = Math.cos(h) * (p[1] - q[1]) - Math.sin(h) * (p[0] - q[0]);
+    return { i: best, dist: Math.sqrt(bestD), side: cross >= 0 ? 1 : -1 };
   }
 
   _pointFeatures(coords, kind) {

@@ -213,14 +213,9 @@
       const chan = new MessageChannel();
       const pending = new Map();
       let nextId = 1;
-      let lastTick = 0;
       chan.port1.onmessage = () => {
-        // Pace to ~60 fps without timers by re-posting until enough time passes.
-        if (performance.now() - lastTick < 16) {
-          if (pending.size) chan.port2.postMessage(0);
-          return;
-        }
-        lastTick = performance.now();
+        // Run unpaced — callbacks compute dt from performance.now() anyway,
+        // and busy-wait pacing starves other timers on the page.
         const cbs = [...pending.values()];
         pending.clear();
         cbs.forEach((cb) => cb(performance.now()));

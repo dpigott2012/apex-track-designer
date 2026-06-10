@@ -54,3 +54,10 @@ against F1/GT homologation rules, then drive it in first person.
 - Track state lives in `state` (plain JSON, saved/exported verbatim); all
   geometry is *derived* and never persisted. Coordinates are `[lng, lat]`;
   local meters are x=east / y=north; Three.js maps that to (x, y-up, -z).
+- Grandstands are stored as track anchors `{t: lap fraction, offset: signed
+  lateral meters}` so they follow track edits; they're wiped if the track is
+  cleared. Legacy `{lng, lat, angle}` stands are migrated in `_rebuildStands`.
+- Drive mode fetches Terrarium DEM for real elevation (`makeElevationSampler`
+  in geo.js): road/kerbs follow a smoothed profile, the ground mesh blends to
+  road height within ~45 m of the centerline, gravity acts along the grade,
+  and going >60 m off track auto-respawns the car.

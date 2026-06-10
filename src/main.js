@@ -253,6 +253,7 @@ window.__app = {
     state.pit = [
       [0, -30], [200, -55], [420, -55], [600, -30],
     ].map(([x, y]) => [c[0] + x / kx, c[1] + y / ky]);
+    state.stands = [{ t: 0.03, offset: 38 }, { t: 0.45, offset: -45 }];
     editor.rebuild();
     flyToTrack();
   },

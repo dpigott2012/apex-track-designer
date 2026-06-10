@@ -222,10 +222,12 @@ export function estimateLap(spline, metrics, car = { vMax: 92, aLat: 30, aBrake:
   return { time: t, vTop, profile: v };
 }
 
-// ---- Satellite tile stitching (Esri World Imagery) ----
+// ---- Map tile stitching (satellite imagery + terrain elevation) ----
 
 const TILE_URL = (z, x, y) =>
   `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`;
+const DEM_URL = (z, x, y) =>
+  `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${z}/${x}/${y}.png`;
 
 function lng2tile(lng, z) { return ((lng + 180) / 360) * Math.pow(2, z); }
 function lat2tile(lat, z) {
@@ -248,10 +250,9 @@ function loadImage(url) {
   });
 }
 
-// Stitch satellite tiles covering a lng/lat bbox into one canvas.
-// Returns {canvas, west, south, east, north} or null on failure.
-export async function fetchSatCanvas(bbox, maxTiles = 64) {
-  let z = 18, x0, x1, y0, y1;
+// Stitch tiles covering a lng/lat bbox into one canvas.
+async function fetchTileCanvas(bbox, urlFn, maxTiles = 64, maxZoom = 18) {
+  let z = maxZoom, x0, x1, y0, y1;
   for (; z > 4; z--) {
     x0 = Math.floor(lng2tile(bbox.west, z)); x1 = Math.floor(lng2tile(bbox.east, z));
     y0 = Math.floor(lat2tile(bbox.north, z)); y1 = Math.floor(lat2tile(bbox.south, z));
@@ -264,7 +265,7 @@ export async function fetchSatCanvas(bbox, maxTiles = 64) {
   const jobs = [];
   for (let x = x0; x <= x1; x++) {
     for (let y = y0; y <= y1; y++) {
-      jobs.push(loadImage(TILE_URL(z, x, y)).then(
+      jobs.push(loadImage(urlFn(z, x, y)).then(
         (img) => ctx.drawImage(img, (x - x0) * 256, (y - y0) * 256),
         () => {}
       ));
@@ -272,9 +273,44 @@ export async function fetchSatCanvas(bbox, maxTiles = 64) {
   }
   await Promise.all(jobs);
   return {
-    canvas,
+    canvas, z, x0, y0,
     west: tile2lng(x0, z), east: tile2lng(x1 + 1, z),
     north: tile2lat(y0, z), south: tile2lat(y1 + 1, z),
+  };
+}
+
+// Satellite imagery canvas for a bbox: {canvas, west, south, east, north}.
+export function fetchSatCanvas(bbox, maxTiles = 64) {
+  return fetchTileCanvas(bbox, TILE_URL, maxTiles, 18);
+}
+
+// Terrain elevation sampler from Terrarium DEM tiles. Returns
+// {elevAt([x,y]) -> meters} taking LOCAL coords via the given projection.
+export async function makeElevationSampler(bbox, proj, maxTiles = 36) {
+  const t = await fetchTileCanvas(bbox, DEM_URL, maxTiles, 14);
+  const { canvas, z, x0, y0 } = t;
+  const W = canvas.width, H = canvas.height;
+  const data = canvas.getContext('2d').getImageData(0, 0, W, H).data;
+  const decode = (px, py) => {
+    const i = (py * W + px) * 4;
+    return (data[i] * 256 + data[i + 1] + data[i + 2] / 256) - 32768;
+  };
+  return {
+    elevAt(p) {
+      const ll = proj.toLngLat(p);
+      const fx = (lng2tile(ll[0], z) - x0) * 256;
+      const fy = (lat2tile(ll[1], z) - y0) * 256;
+      const cx = Math.min(W - 1.001, Math.max(0, fx));
+      const cy = Math.min(H - 1.001, Math.max(0, fy));
+      const ix = Math.floor(cx), iy = Math.floor(cy);
+      const ax = cx - ix, ay = cy - iy;
+      return (
+        decode(ix, iy) * (1 - ax) * (1 - ay) +
+        decode(ix + 1, iy) * ax * (1 - ay) +
+        decode(ix, iy + 1) * (1 - ax) * ay +
+        decode(ix + 1, iy + 1) * ax * ay
+      );
+    },
   };
 }
 
@@ -289,6 +325,20 @@ export function bboxOfLngLats(coords, marginM = 0) {
   const latM = marginM / 110574;
   const lngM = marginM / (111320 * Math.cos(((south + north) / 2) * DEG));
   return { west: west - lngM, east: east + lngM, south: south - latM, north: north + latM };
+}
+
+// Resolve a track-anchored stand {t, offset} to a local pose {x, y, angle, i}.
+export function standPose(spline, metrics, st) {
+  const target = (st.t || 0) * spline.len;
+  let i = 0;
+  while (i < spline.pts.length - 1 && spline.s[i + 1] < target) i++;
+  const h = metrics.heading[i];
+  const q = spline.pts[i];
+  return {
+    x: q[0] - Math.sin(h) * st.offset,
+    y: q[1] + Math.cos(h) * st.offset,
+    angle: h, i,
+  };
 }
 
 export function fmtTime(t) {
