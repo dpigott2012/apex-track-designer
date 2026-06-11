@@ -89,10 +89,12 @@ export function pathMetrics(spline, smoothMeters = 16) {
 }
 
 // Offset each sample to the left (d > 0) of travel direction.
+// d may be a number or a per-sample array.
 export function offsetPath(spline, metrics, d) {
+  const dAt = Array.isArray(d) ? (i) => d[i] : () => d;
   return spline.pts.map((p, i) => [
-    p[0] - Math.sin(metrics.heading[i]) * d,
-    p[1] + Math.cos(metrics.heading[i]) * d,
+    p[0] - Math.sin(metrics.heading[i]) * dAt(i),
+    p[1] + Math.cos(metrics.heading[i]) * dAt(i),
   ]);
 }
 

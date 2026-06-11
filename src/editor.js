@@ -52,6 +52,8 @@ export function createMap(container) {
     attributionControl: { compact: true },
   });
   map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'bottom-left');
+  // The browser context menu would cover the map and eat right-click deletes.
+  map.getCanvasContainer().addEventListener('contextmenu', (ev) => ev.preventDefault());
   // Globe is gorgeous zoomed out, but MapLibre 5 can't draw circle/symbol
   // layers with terrain on the globe projection. Past city scale the two
   // projections look identical, so swap to mercator+terrain when zoomed in.
@@ -142,6 +144,11 @@ export class TrackEditor {
   _onClick(e) {
     const s = this.state;
     const ll = [e.lngLat.lng, e.lngLat.lat];
+    // Alt+click deletes — same as right-click, for trackpads/missing buttons.
+    if (e.originalEvent && e.originalEvent.altKey) {
+      this._deleteAt(e.point);
+      return;
+    }
     if (this.mode === 'track') {
       if (s.closed) {
         // Closed loop: clicking near the track inserts a point into the
@@ -204,9 +211,15 @@ export class TrackEditor {
   }
 
   _onRightClick(e) {
-    const f = this._featureAt(e.point, ['ctrl-points-l', 'pit-points-l', 'stands-fill']);
-    if (!f) return;
-    e.preventDefault();
+    if (this._deleteAt(e.point)) {
+      e.preventDefault();
+      if (e.originalEvent) e.originalEvent.preventDefault();
+    }
+  }
+
+  _deleteAt(point) {
+    const f = this._featureAt(point, ['ctrl-points-l', 'pit-points-l', 'stands-fill']);
+    if (!f) return false;
     const s = this.state;
     if (f.properties.kind === 'track') {
       s.points.splice(f.properties.idx, 1);
@@ -217,6 +230,7 @@ export class TrackEditor {
       s.pit.splice(f.properties.idx, 1);
     }
     this.rebuild();
+    return true;
   }
 
   closeLoop() {

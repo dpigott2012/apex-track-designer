@@ -166,8 +166,26 @@ export async function startDrive({ state, derived, container, hud, onExit }) {
     const subM = { heading: idxs.map((j) => metrics.heading[j]), curv: idxs.map((j) => metrics.curv[j]) };
     const subE = idxs.map((j) => elevArr[j]);
     for (const side of [1, -1]) {
-      const a = offsetPath(sub, subM, side * (width / 2 + 0.1));
-      const b = offsetPath(sub, subM, side * (width / 2 + 2.0));
+      // On the inside of a turn the offset must stay below the corner radius,
+      // or the offset path folds over itself and spikes across the corner.
+      const clamp = (j, d) => {
+        const k = metrics.curv[j];
+        if (Math.sign(k) !== side || Math.abs(k) < 1e-6) return d;
+        return Math.min(d, Math.max(0.8, 1 / Math.abs(k) - 0.6));
+      };
+      const a = offsetPath(sub, subM, idxs.map((j) => side * clamp(j, width / 2 + 0.1)));
+      const b = offsetPath(sub, subM, idxs.map((j) => side * clamp(j, width / 2 + 2.0)));
+      // The smoothed curvature can underestimate a sharp cusp, so also repair
+      // geometrically: collapse any offset segment that runs backwards
+      // against the direction of travel (that's what folds into a spike).
+      for (const arr of [a, b]) {
+        for (let i = 0; i + 1 < arr.length; i++) {
+          const tx = Math.cos(subM.heading[i]), ty = Math.sin(subM.heading[i]);
+          if ((arr[i + 1][0] - arr[i][0]) * tx + (arr[i + 1][1] - arr[i][1]) * ty < 0) {
+            arr[i + 1] = arr[i];
+          }
+        }
+      }
       const kerb = new THREE.Mesh(stripGeometry(a, b, sub.s, 4, subE), kerbMat);
       kerb.position.y = 0.09;
       scene.add(kerb);
