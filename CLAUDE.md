@@ -58,6 +58,12 @@ against F1/GT homologation rules, then drive it in first person.
   lateral meters}` so they follow track edits; they're wiped if the track is
   cleared. Legacy `{lng, lat, angle}` stands are migrated in `_rebuildStands`.
 - Drive mode fetches Terrarium DEM for real elevation (`makeElevationSampler`
-  in geo.js): road/kerbs follow a smoothed profile, the ground mesh blends to
-  road height within ~45 m of the centerline, gravity acts along the grade,
-  and going >60 m off track auto-respawns the car.
+  in geo.js): road/kerbs follow a smoothed profile, gravity acts along the
+  grade, and going >60 m off track auto-respawns the car.
+- Terrain must never poke through the road: the ground mesh carves a flat
+  apron 0.3 m *below* road height extending one vertex-spacing past the kerbs
+  (so no triangle can rise across the ribbon), using the **minimum** road
+  elevation among all track sections within reach (switchbacks!), then ramps
+  to true DEM height over ~45 m. Verify with the `window.__drive` debug handle
+  (set while driving): scan ground vertices within `width/2 + 2.5` of a sample
+  and assert `y <= elevArr[i] - 0.05`.

@@ -222,35 +222,67 @@ export async function startDrive({ state, derived, container, hud, onExit }) {
   }
 
   // Ground: terrain-displaced mesh, draped with satellite imagery when it
-  // loads. Terrain blends to road height within ~45 m of the centerline so
-  // the road never floats or sinks.
+  // loads. A flat apron is carved around the road — sized so that no terrain
+  // triangle can start at road level and rise across the ribbon — then the
+  // surface ramps out to true terrain height (like a real cutting).
+  const CELL = 40; // spatial hash of road samples for fast nearest lookup
+  const sampleGrid = new Map();
+  for (let i = 0; i < n; i++) {
+    const k = `${Math.floor(spline.pts[i][0] / CELL)}_${Math.floor(spline.pts[i][1] / CELL)}`;
+    if (!sampleGrid.has(k)) sampleGrid.set(k, []);
+    sampleGrid.get(k).push(i);
+  }
+  // Nearest road sample, plus the LOWEST road elevation within minRadius —
+  // where two track sections run close together the apron must duck under
+  // both, not flatten to whichever is nearer.
+  const nearestRoad = (ex, ny, minRadius = 0) => {
+    let bi = -1, bd = Infinity, minElev = Infinity;
+    const mr2 = minRadius * minRadius;
+    const gx = Math.floor(ex / CELL), gy = Math.floor(ny / CELL);
+    const minRings = Math.ceil(minRadius / CELL) + 1;
+    for (let ring = 1; ring <= 6; ring++) {
+      for (let dx = -ring; dx <= ring; dx++) {
+        for (let dy = -ring; dy <= ring; dy++) {
+          if (ring > 1 && Math.max(Math.abs(dx), Math.abs(dy)) < ring) continue;
+          const cell = sampleGrid.get(`${gx + dx}_${gy + dy}`);
+          if (!cell) continue;
+          for (const i of cell) {
+            const p = spline.pts[i];
+            const dd = (p[0] - ex) ** 2 + (p[1] - ny) ** 2;
+            if (dd < bd) { bd = dd; bi = i; }
+            if (dd < mr2 && elevArr[i] < minElev) minElev = elevArr[i];
+          }
+        }
+      }
+      if (bi >= 0 && ring >= minRings) break;
+    }
+    if (bi < 0) { // far from any sample — coarse fallback
+      for (let i = 0; i < n; i += 16) {
+        const p = spline.pts[i];
+        const dd = (p[0] - ex) ** 2 + (p[1] - ny) ** 2;
+        if (dd < bd) { bd = dd; bi = i; }
+      }
+    }
+    if (minElev === Infinity) minElev = elevArr[bi];
+    return { bi, dist: Math.sqrt(bd), minElev };
+  };
+
   const makeTerrain = (w, h, cx, cy, mat) => {
-    const seg = 110;
+    const seg = 240;
     const geo = new THREE.PlaneGeometry(w, h, seg, seg);
     geo.rotateX(-Math.PI / 2);
     const pos = geo.attributes.position;
     if (groundElevAt) {
+      const spacing = Math.max(w, h) / seg;
+      const flatR = width / 2 + 2.5 + spacing; // road + kerbs + one vertex ring
+      const rampLen = 45;
       for (let vi = 0; vi < pos.count; vi++) {
         const ex = cx + pos.getX(vi);          // east
         const ny = cy - pos.getZ(vi);          // north
-        const ge = groundElevAt([ex, ny]);
-        // Nearest road sample: coarse stride, then refine.
-        let bi = 0, bd = Infinity;
-        for (let i = 0; i < n; i += 4) {
-          const p = spline.pts[i];
-          const dd = (p[0] - ex) ** 2 + (p[1] - ny) ** 2;
-          if (dd < bd) { bd = dd; bi = i; }
-        }
-        for (let j = -3; j <= 3; j++) {
-          const i = ((bi + j) % n + n) % n;
-          const p = spline.pts[i];
-          const dd = (p[0] - ex) ** 2 + (p[1] - ny) ** 2;
-          if (dd < bd) { bd = dd; bi = i; }
-        }
-        const dist = Math.sqrt(bd);
-        let t = Math.min(1, Math.max(0, (dist - width / 2 - 1) / 45));
+        const { dist, minElev } = nearestRoad(ex, ny, flatR + spacing + 4);
+        let t = Math.min(1, Math.max(0, (dist - flatR) / rampLen));
         t = t * t * (3 - 2 * t);
-        pos.setY(vi, (1 - t) * elevArr[bi] + t * ge - 0.12);
+        pos.setY(vi, (1 - t) * (minElev - 0.3) + t * groundElevAt([ex, ny]));
       }
       geo.computeVertexNormals();
     }
@@ -365,6 +397,9 @@ export async function startDrive({ state, derived, container, hud, onExit }) {
   let raf = 0, last = performance.now(), running = true;
   let offTrack = false, wrongWayT = 0;
 
+  // Debug handle for scripted testing (see CLAUDE.md).
+  window.__drive = { scene, car, elevArr, spline, width, getGround: () => ground };
+
   function physics(dt) {
     const throttle = keys['w'] || keys['arrowup'] ? 1 : 0;
     const brake = keys['s'] || keys['arrowdown'] ? 1 : 0;
@@ -426,10 +461,14 @@ export async function startDrive({ state, derived, container, hud, onExit }) {
       car.v -= 9.81 * grade * align * dt;
     }
 
-    // Follow road height on track, terrain height on grass.
-    const targetElev = offTrack && groundElevAt
-      ? groundElevAt([car.x, car.y])
-      : elevArr[best];
+    // Follow road height on track; on grass blend from the flat apron out to
+    // true terrain height, matching the ground mesh around the road.
+    let targetElev = elevArr[best];
+    if (offTrack && groundElevAt) {
+      let t = Math.min(1, Math.max(0, (offDist - width / 2 - 18) / 45));
+      t = t * t * (3 - 2 * t);
+      targetElev = (1 - t) * elevArr[best] + t * groundElevAt([car.x, car.y]);
+    }
     car.elev += (targetElev - car.elev) * Math.min(1, dt * 7);
     if (flashT > 0) flashT -= dt;
 
@@ -535,6 +574,7 @@ export async function startDrive({ state, derived, container, hud, onExit }) {
     window.removeEventListener('keyup', ku);
     window.removeEventListener('resize', resize);
     renderer.dispose();
+    delete window.__drive;
     onExit();
   }
   return { stop };
