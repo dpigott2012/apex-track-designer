@@ -6,7 +6,9 @@
       "PowerShell($conn = Get-NetTCPConnection -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue; if \\($conn\\) { $conn | Select-Object LocalAddress, LocalPort, OwningProcess | Format-Table; Get-Process -Id $conn[0].OwningProcess | Select-Object ProcessName, Id } else { 'Nothing is listening on port 8080' })",
       "PowerShell(Start-Process powershell -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',\"`\"$PWD\\\\serve.ps1`\"\" -WindowStyle Minimized; Start-Sleep -Seconds 2; try { $r = Invoke-WebRequest -Uri 'http://localhost:8080/' -UseBasicParsing -TimeoutSec 5; \"Server is up — HTTP $\\($r.StatusCode\\), $\\($r.RawContentLength\\) bytes\" } catch { \"Server failed to respond: $\\($_.Exception.Message\\)\" })",
       "PowerShell($conn = Get-NetTCPConnection -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue; if \\($conn\\) { \"Port 8080 already serving \\(PID $\\($conn[0].OwningProcess\\)\\)\" } else { 'Port 8080 free' })",
-      "mcp__Claude_Preview__preview_start"
+      "mcp__Claude_Preview__preview_start",
+      "Bash(mkdir -p \"C:/Users/kinar/OneDrive - Kinard Technologies/Documents/Claudes Play Box/cUAS Pricing/src\")",
+      "PowerShell($f = Get-Content \"C:\\\\Users\\\\kinar\\\\.claude\\\\projects\\\\C--Users-kinar-OneDrive---Kinard-Technologies-Documents-Claudes-Play-Box-Track-Game\\\\b4a043c8-681a-4222-a584-16414ef14cca\\\\tool-results\\\\mcp-Claude_Browser-javascript_tool-1784055201407.txt\" -Raw | ConvertFrom-Json; $b64 = $f[0].text -replace '^\"?data:image/jpeg;base64,', '' -replace '\"$',''; [IO.File]::WriteAllBytes\\(\"C:\\\\Users\\\\kinar\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-kinar-OneDrive---Kinard-Technologies-Documents-Claudes-Play-Box-Track-Game\\\\b4a043c8-681a-4222-a584-16414ef14cca\\\\scratchpad\\\\cuas-map.jpg\", [Convert]::FromBase64String\\($b64\\)\\); \\(Get-Item \"C:\\\\Users\\\\kinar\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-kinar-OneDrive---Kinard-Technologies-Documents-Claudes-Play-Box-Track-Game\\\\b4a043c8-681a-4222-a584-16414ef14cca\\\\scratchpad\\\\cuas-map.jpg\"\\).Length)"
     ]
   }
 }
