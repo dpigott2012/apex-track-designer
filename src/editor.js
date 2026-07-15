@@ -139,6 +139,47 @@ export class TrackEditor {
     map.on('mousemove', (e) => this._onMouseMove(e));
     map.on('mouseup', () => this._onMouseUp());
     map.on('contextmenu', (e) => this._onRightClick(e));
+    // Touch: one-finger drag moves a point; long-press deletes it.
+    map.on('touchstart', (e) => this._onTouchStart(e));
+    map.on('touchmove', (e) => this._onTouchMove(e));
+    map.on('touchend', (e) => this._onTouchEnd(e));
+    map.on('touchcancel', (e) => this._onTouchEnd(e));
+  }
+
+  _onTouchStart(e) {
+    if (e.points && e.points.length > 1) { this._onTouchEnd(); return; }
+    const f = this._featureAt(e.point, ['ctrl-points-l', 'pit-points-l', 'stands-fill']);
+    if (!f) return;
+    e.preventDefault();
+    this.touch = { kind: f.properties.kind, idx: f.properties.idx, start: e.point, moved: false };
+    clearTimeout(this._pressTimer);
+    this._pressTimer = setTimeout(() => {
+      if (this.touch && !this.touch.moved) {
+        const t = this.touch;
+        this.touch = null;
+        if (navigator.vibrate) navigator.vibrate(40);
+        this._deleteByRef(t.kind, t.idx);
+      }
+    }, 600);
+  }
+
+  _onTouchMove(e) {
+    if (!this.touch) return;
+    e.preventDefault();
+    if (Math.hypot(e.point.x - this.touch.start.x, e.point.y - this.touch.start.y) > 10) {
+      this.touch.moved = true;
+    }
+    if (!this.touch.moved || this.touch.kind === 'stand') return;
+    const ll = [e.lngLat.lng, e.lngLat.lat];
+    if (this.touch.kind === 'track') this.state.points[this.touch.idx] = ll;
+    else this.state.pit[this.touch.idx] = ll;
+    this.rebuildSoon();
+  }
+
+  _onTouchEnd() {
+    clearTimeout(this._pressTimer);
+    if (this.touch && this.touch.moved) this.rebuild();
+    this.touch = null;
   }
 
   _onClick(e) {
@@ -153,7 +194,7 @@ export class TrackEditor {
       if (s.closed) {
         // Closed loop: clicking near the track inserts a point into the
         // nearest segment so new corners can be pulled out afterward.
-        this._insertPoint(ll);
+        this._insertPoint(ll, e.point);
         return;
       }
       // Clicking the first point with >= 3 points closes the loop.
@@ -220,17 +261,21 @@ export class TrackEditor {
   _deleteAt(point) {
     const f = this._featureAt(point, ['ctrl-points-l', 'pit-points-l', 'stands-fill']);
     if (!f) return false;
+    this._deleteByRef(f.properties.kind, f.properties.idx);
+    return true;
+  }
+
+  _deleteByRef(kind, idx) {
     const s = this.state;
-    if (f.properties.kind === 'track') {
-      s.points.splice(f.properties.idx, 1);
+    if (kind === 'track') {
+      s.points.splice(idx, 1);
       if (s.points.length < 3) s.closed = false;
-    } else if (f.properties.kind === 'stand') {
-      s.stands.splice(f.properties.idx, 1);
+    } else if (kind === 'stand') {
+      s.stands.splice(idx, 1);
     } else {
-      s.pit.splice(f.properties.idx, 1);
+      s.pit.splice(idx, 1);
     }
     this.rebuild();
-    return true;
   }
 
   closeLoop() {
@@ -269,10 +314,17 @@ export class TrackEditor {
   }
 
   // Insert a control point into the nearest segment of the closed loop.
-  _insertPoint(ll) {
+  _insertPoint(ll, screenPt) {
     const d = this.derived;
     const s = this.state;
     if (!d) return;
+    // Tapping an existing node means grab/select, not insert-on-top-of-it.
+    if (screenPt) {
+      for (const cp of s.points) {
+        const px = this.map.project(cp);
+        if (Math.hypot(px.x - screenPt.x, px.y - screenPt.y) < 20) return;
+      }
+    }
     const p = d.proj.toLocal(ll);
     const ctrl = s.points.map(d.proj.toLocal);
     const n = ctrl.length;

@@ -19,6 +19,16 @@ function onDerived(d) {
   renderTurns(d);
   $('btnDrive').disabled = !(d && d.closed);
   $('btnDrive').title = d && d.closed ? '' : 'Close the track loop first';
+  // Collapsed bottom-sheet summary (mobile).
+  if (d) {
+    const checks = validate(d, state.preset);
+    const graded = checks.filter((c) => c.ok !== null);
+    const passed = graded.filter((c) => c.ok).length;
+    $('sheetSummary').textContent =
+      `${(d.len / 1000).toFixed(2)} km · ${d.corners.length} turns · ${passed}/${graded.length} ✓ — tap for details`;
+  } else {
+    $('sheetSummary').textContent = 'Circuit panel — tap to open';
+  }
 }
 
 function renderStats(d) {
@@ -91,6 +101,41 @@ $('btnClear').addEventListener('click', () => {
 window.addEventListener('keydown', (e) => {
   if (e.ctrlKey && e.key === 'z' && !driveSession) { e.preventDefault(); editor.undo(); }
 });
+
+// ---------- mobile chrome ----------
+const IS_TOUCH = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
+const mobileMq = matchMedia('(max-width: 820px)');
+function placeFileBtns() {
+  // New/Import/Export live in the top bar on desktop, in the sheet on phones.
+  const fb = $('fileBtns');
+  if (mobileMq.matches) $('panel').insertBefore(fb, $('sheetHandle').nextSibling);
+  else $('topbar').insertBefore(fb, $('btnDrive'));
+}
+mobileMq.addEventListener('change', placeFileBtns);
+placeFileBtns();
+$('sheetHandle').addEventListener('click', () => $('panel').classList.toggle('open'));
+
+// On-screen drive controls: buttons synthesize the same key events the
+// physics already listens for, so drive.js needs no changes.
+function wirePressButton(id, key) {
+  const el = $(id);
+  const send = (type) => window.dispatchEvent(new KeyboardEvent(type, { key }));
+  el.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    try { el.setPointerCapture(e.pointerId); } catch {}
+    send('keydown');
+  });
+  for (const evt of ['pointerup', 'pointercancel']) {
+    el.addEventListener(evt, () => send('keyup'));
+  }
+  el.addEventListener('contextmenu', (e) => e.preventDefault());
+}
+wirePressButton('tSteerL', 'a');
+wirePressButton('tSteerR', 'd');
+wirePressButton('tGas', 'w');
+wirePressButton('tBrake', 's');
+$('tRespawn').addEventListener('click', () =>
+  window.dispatchEvent(new KeyboardEvent('keydown', { key: 'r' })));
 
 // ---------- top bar ----------
 $('trackName').addEventListener('change', () => {
@@ -186,6 +231,7 @@ async function enterDrive() {
   try {
     const { startDrive } = await import('./drive.js');
     $('drive').classList.add('on');
+    $('drive').classList.toggle('touch', IS_TOUCH);
     driveSession = await startDrive({
       state,
       derived: editor.derived,

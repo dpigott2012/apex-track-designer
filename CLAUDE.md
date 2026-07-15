@@ -60,6 +60,14 @@ against F1/GT homologation rules, then drive it in first person.
 - Drive mode fetches Terrarium DEM for real elevation (`makeElevationSampler`
   in geo.js): road/kerbs follow a smoothed profile, gravity acts along the
   grade, and going >60 m off track auto-respawns the car.
+- Mobile (≤820px): right panel becomes a bottom sheet (#sheetHandle toggles
+  .open), toolbar goes horizontal/icon-only, New/Import/Export relocate into
+  the sheet via `placeFileBtns()`. Touch editing lives in editor.js
+  (`_onTouchStart/Move/End`: drag = move point, 600ms long-press = delete).
+  Drive touch controls are buttons that synthesize the same KeyboardEvents
+  the physics reads — shown when `#drive` has the `touch` class (pointer:
+  coarse). CSS transitions don't advance in the hidden test pane — assert on
+  class + computed style with `transition: none`, not on animated position.
 - Terrain must never poke through the road: the ground mesh carves a flat
   apron 0.3 m *below* road height extending one vertex-spacing past the kerbs
   (so no triangle can rise across the ribbon), using the **minimum** road

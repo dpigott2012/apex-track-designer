@@ -125,7 +125,8 @@ export async function startDrive({ state, derived, container, hud, onExit }) {
 
   // ---------- scene ----------
   const renderer = new THREE.WebGLRenderer({ canvas: container, antialias: true });
-  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  // Phones: cap the pixel ratio lower — full retina + terrain is a heater.
+  renderer.setPixelRatio(Math.min(devicePixelRatio, innerWidth < 900 ? 1.5 : 2));
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0xa8c8e8);
   scene.fog = new THREE.Fog(0xa8c8e8, 600, 5000);

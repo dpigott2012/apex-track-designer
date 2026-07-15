@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
 <title>Apex — Track Designer</title>
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.css" />
 <style>
@@ -12,11 +12,13 @@
     --ok: #3ddc84; --bad: #ff5252;
   }
   * { box-sizing: border-box; margin: 0; }
-  html, body { height: 100%; overflow: hidden; }
+  html, body { height: 100%; height: 100dvh; overflow: hidden; overscroll-behavior: none; }
   body {
     font: 14px/1.45 "Segoe UI", system-ui, sans-serif;
     background: var(--bg); color: var(--text);
+    -webkit-tap-highlight-color: transparent;
   }
+  button { touch-action: manipulation; }
   #map { position: absolute; inset: 0; }
 
   /* ---- top bar ---- */
@@ -131,6 +133,83 @@
     background: #000c; color: #fff; font: italic 700 22px "Segoe UI";
   }
   #loading.on { display: grid; }
+
+  #fileBtns { display: flex; gap: 10px; }
+  #toolbar button .txt { margin-left: 7px; }
+  #sheetHandle { display: none; }
+
+  /* ---- drive touch controls (shown when a touch device enters drive) ---- */
+  #touchControls { display: none; }
+  #drive.touch #touchControls { display: block; }
+  .tbtn {
+    position: absolute; width: 82px; height: 82px; border-radius: 50%;
+    background: rgba(255,255,255,0.10); border: 1.5px solid rgba(255,255,255,0.4);
+    color: #fff; font-size: 30px; display: grid; place-items: center;
+    touch-action: none; user-select: none; -webkit-user-select: none;
+  }
+  .tbtn:active { background: rgba(255,255,255,0.30); }
+  #tSteerL { left: 16px;  bottom: calc(22px + env(safe-area-inset-bottom)); }
+  #tSteerR { left: 108px; bottom: calc(22px + env(safe-area-inset-bottom)); }
+  #tBrake  { right: 108px; bottom: calc(22px + env(safe-area-inset-bottom)); }
+  #tGas    { right: 16px;  bottom: calc(22px + env(safe-area-inset-bottom)); }
+  #tRespawn { width: 46px; height: 46px; font-size: 20px; top: 14px; right: 110px; }
+
+  /* ---- phone layout ---- */
+  @media (max-width: 820px) {
+    #topbar { height: 48px; gap: 6px; padding: 0 8px; }
+    #brand { display: none; }
+    #trackName { width: 105px; flex: none; font-size: 13px; padding: 4px 6px; }
+    #searchWrap { max-width: none; flex: 1; }
+    #topbar #fileBtns { display: none; }
+    #panel #fileBtns { display: flex; margin: 4px 0 10px; }
+    #panel #fileBtns button { flex: 1; }
+
+    #toolbar {
+      top: 48px; left: 0; right: 0; width: auto;
+      flex-direction: row; gap: 6px; padding: 6px 8px;
+      border-radius: 0; border-left: none; border-right: none;
+      overflow-x: auto; scrollbar-width: none;
+    }
+    #toolbar .label, #toolbar .tip { display: none; }
+    #toolbar button { flex: none; padding: 9px 11px; font-size: 16px; }
+    #toolbar button .txt { display: none; }
+
+    #panel {
+      top: auto; left: 0; right: 0; bottom: 0; width: auto;
+      height: 62dvh; border-radius: 16px 16px 0 0; border-bottom: none;
+      transform: translateY(calc(100% - 46px));
+      transition: transform 0.25s ease; padding-top: 0;
+    }
+    #panel.open { transform: translateY(0); }
+    #sheetHandle {
+      display: flex; align-items: center; gap: 12px; height: 46px;
+      margin: 0 -14px; padding: 0 16px; cursor: pointer;
+      position: sticky; top: 0; background: #11141ce8; z-index: 2;
+    }
+    #sheetHandle .grip { width: 34px; height: 4px; border-radius: 2px; background: #4a5164; flex: none; }
+    #sheetHandle span { font-size: 12px; color: var(--dim); white-space: nowrap; overflow: hidden; }
+
+    /* drive HUD scaled for phones */
+    #hudSpeedWrap { bottom: calc(118px + env(safe-area-inset-bottom)); }
+    #hudSpeed { font-size: 42px; }
+    #hudGear { font-size: 26px; left: -40px; top: 4px; }
+    #hudTime { font-size: 19px; }
+    #hudTimeWrap .sub { font-size: 11px; gap: 10px; }
+    #hudLap { font-size: 15px; top: 16px; left: 12px; }
+    #hudTurn { font-size: 20px; top: 28%; width: 100%; text-align: center; }
+    #hudMsg { font-size: 18px; top: 38%; }
+    #minimap { width: 110px; height: 110px; top: 70px; right: 12px; bottom: auto; }
+    #hudHelp { display: none; }
+    #hudExit { top: 14px; right: 12px; padding: 9px 12px; }
+
+    /* keep the two thumb clusters clear of each other on narrow screens */
+    .tbtn { width: 72px; height: 72px; font-size: 26px; }
+    #tSteerL { left: 12px; }
+    #tSteerR { left: 92px; }
+    #tBrake { right: 92px; }
+    #tGas { right: 12px; }
+    #tRespawn { width: 44px; height: 44px; right: 116px; }
+  }
 </style>
 </head>
 <body>
@@ -144,27 +223,30 @@
       <div id="searchResults"></div>
     </div>
     <div class="spacer"></div>
-    <button id="btnNew">New</button>
-    <button id="btnImport">Import</button>
-    <button id="btnExport">Export</button>
+    <div id="fileBtns">
+      <button id="btnNew">New</button>
+      <button id="btnImport">Import</button>
+      <button id="btnExport">Export</button>
+    </div>
     <button id="btnDrive" class="primary">🏁 DRIVE</button>
   </div>
 
   <div id="toolbar">
     <div class="label">Tools</div>
-    <button data-mode="view" class="active">🧭 Explore</button>
-    <button data-mode="track">✏️ Draw Track</button>
-    <button data-mode="pit">🅿️ Pit Lane</button>
-    <button data-mode="start">🏁 Start / Finish</button>
-    <button data-mode="stand">🏟️ Grandstand</button>
+    <button data-mode="view" class="active"><span class="ico">🧭</span><span class="txt">Explore</span></button>
+    <button data-mode="track"><span class="ico">✏️</span><span class="txt">Draw Track</span></button>
+    <button data-mode="pit"><span class="ico">🅿️</span><span class="txt">Pit Lane</span></button>
+    <button data-mode="start"><span class="ico">🏁</span><span class="txt">Start / Finish</span></button>
+    <button data-mode="stand"><span class="ico">🏟️</span><span class="txt">Grandstand</span></button>
     <div class="label">Actions</div>
-    <button id="btnClose">✅ Close Loop</button>
-    <button id="btnUndo">↩️ Undo</button>
-    <button id="btnClear">🗑️ Clear All</button>
-    <div class="tip">💡 Drag points to move them. Right-click (or Alt+click) a point or grandstand to delete it.</div>
+    <button id="btnClose"><span class="ico">✅</span><span class="txt">Close Loop</span></button>
+    <button id="btnUndo"><span class="ico">↩️</span><span class="txt">Undo</span></button>
+    <button id="btnClear"><span class="ico">🗑️</span><span class="txt">Clear All</span></button>
+    <div class="tip">💡 Drag points to move them. Right-click (or Alt+click) a point or grandstand to delete it. On touch: drag with a finger, long-press to delete.</div>
   </div>
 
   <div id="panel">
+    <div id="sheetHandle"><div class="grip"></div><span id="sheetSummary">Circuit</span></div>
     <h3>Circuit</h3>
     <div id="stats"></div>
     <div id="widthRow">
@@ -201,6 +283,13 @@
     <canvas class="hud" id="minimap" width="190" height="190"></canvas>
     <div class="hud" id="hudHelp">W/S throttle · brake — A/D steer — R respawn — ESC exit</div>
     <button class="hud" id="hudExit">✕ Exit (Esc)</button>
+    <div id="touchControls">
+      <button class="tbtn" id="tSteerL">◀</button>
+      <button class="tbtn" id="tSteerR">▶</button>
+      <button class="tbtn" id="tBrake">▼</button>
+      <button class="tbtn" id="tGas">▲</button>
+      <button class="tbtn small" id="tRespawn">↺</button>
+    </div>
   </div>
   <div id="loading">Building circuit…</div>
 
